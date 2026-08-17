@@ -1,106 +1,99 @@
-# RoboLens — Mobile Rover & Robotic Arm Control with Live Camera Feedback
+```markdown
+# RoboLens
 
-RoboLens is a WiFi-controlled remote robotic manipulation system built for hazardous-environment tasks. It combines a mobile tank chassis, a 6-DOF robotic arm, and live video streaming — all controlled from a custom Flutter mobile app over a local network, with push-notification alerts for critical safety events.
-
-## Overview
-
-The system allows an operator to remotely drive a rover, manipulate objects with a 6-DOF arm, and watch a live camera feed, all from a smartphone. Safety is built in at the hardware level with obstacle detection and a connection watchdog, so the robot stops itself if a command stream is interrupted or an obstacle is detected.
-
+**Remote Robotic Manipulation System** — a WiFi-controlled robot with a 6-DOF arm and tank chassis, operated from a mobile app over a local network. 
 ## Features
 
-- Real-time chassis control with a 4-directional D-pad and continuous "heartbeat" signaling
-- 6-DOF robotic arm control with independent sliders per joint, each respecting its real mechanical range (0°–120° up to 0°–240°)
-- Adjustable movement speed (Slow/Medium/Fast) for both chassis and arm
-- Live camera streaming (MJPEG) displayed directly in the app
-- Obstacle detection — front ultrasonic sensor blocks forward movement within 30cm
-- Safety watchdog — chassis auto-stops if no command is received for 2 seconds
-- Emergency stop for immediate full stop
-- Push notifications (Firebase Cloud Messaging) for obstacle detection, connection loss, and emergency stop, even when the app is closed
-- Fully local network operation — no internet/cloud dependency for control, works over a phone hotspot
+- 6-DOF robotic arm control with per-joint angle limits
+- Tank-style chassis movement
+- Live camera feed with real-time obstacle distance overlay
+- Safety: obstacle detection, connection watchdog auto-stop, emergency stop
+- Optional push notifications for safety events (Firebase)
 
-## System Architecture
+## Architecture
 
-Flutter App <---WebSocket---> Raspberry Pi 4 <---Serial---> Arduino Mega 2560, which drives Servos / Motors / Sensors. The Raspberry Pi also serves an MJPEG Camera Stream and sends alerts through Firebase Cloud Messaging to the Phone Notification Tray.
+```
+Flutter App  ──WebSocket──▶  Raspberry Pi 4  ──Serial(USB)──▶  Arduino Mega  ──▶  Servos / Motors
+                 (8765)         (bridge)                        (firmware)         Ultrasonic x3
+                                    │
+                            mjpg-streamer (8080)
+                                    │
+                                 Camera ◀── Logitech C270
+```
 
-The Flutter app connects to the Raspberry Pi over WebSocket and sends JSON commands. The Pi (pi_server.py) translates these into text commands relayed to the Arduino Mega over serial, which drives the servos/motors and enforces safety logic directly in firmware. A Logitech webcam connected to the Pi is streamed live via mjpg-streamer. The Pi also sends Firebase push notifications for critical events, independent of the WebSocket connection.
+All communication runs over a local WiFi network (e.g. a phone hotspot) — no internet dependency for control.
 
-## Hardware Components
+## Hardware
 
-| Component | Details |
+| Component | Spec |
 |---|---|
 | Processing | Raspberry Pi 4 (8GB) |
 | Controller | Arduino Mega 2560 |
-| Arm | 6-DOF robotic arm (Hiwonder LeArm AI) |
-| Chassis | Metal crawler tank chassis + 2x BTS7960 motor drivers (4-wheel, 2-motor) |
-| Camera | Logitech Webcam C270 |
-| Sensors | 3x Ultrasonic sensors (Front / Left / Right) |
-| Power | 4500mAh 3S 11.1V LiPo (chassis/arm) + power bank (Raspberry Pi) |
+| Arm | 6-DOF (Hiwonder LeArm AI) |
+| Chassis | Metal crawler tank + BTS7960 x2 |
+| Camera | Logitech C270 |
+| Sensors | 3x ultrasonic (front/left/right) |
+| Power | 4500mAh 3S 11.1V LiPo + powerbank (Pi) |
 
-## Repository Structure
+## Repo Structure
 
-- lib/ — Flutter app source code
-  - main.dart — Splash screen, Connect screen, Firebase init
-  - control_screen.dart — Arm sliders, chassis D-pad, camera feed, alerts
-  - settings_screen.dart — Connection info, speed presets, alert toggle
-- android/, ios/, web/... — Flutter platform folders
-- assets/icon/ — App icon and branding assets
-- pi_server/
-  - pi_server.py — WebSocket server + serial bridge + FCM push
-  - robolens-server.service — systemd service for auto-start on boot
-- firmware/
-  - robolens_firmware.ino — Arduino Mega firmware
-- README.md
+```
+/app          — Flutter mobile app (control_screen.dart, settings_screen.dart, main.dart)
+/pi           — pi_server.py (WebSocket bridge + serial + camera)
+/firmware     — robolens_firmware.ino (Arduino Mega)
+```
 
-## Software Stack
+## Setup
 
-- App: Flutter (Dart) — web_socket_channel, flutter_mjpeg, firebase_core, firebase_messaging, shared_preferences
-- Server: Python 3 — websockets, pyserial, firebase-admin
-- Firmware: Arduino (C++) — Servo.h
-- Notifications: Firebase Cloud Messaging (topic-based, no auth/database required)
-
-## Setup & Running
+### 0. Clone the Repository
+```bash
+git clone https://github.com/<your-username>/robolens.git
+cd robolens
+```
 
 ### 1. Arduino
-Open firmware/robolens_firmware.ino in the Arduino IDE, select Arduino Mega 2560, and upload.
+Upload `firmware/robolens_firmware.ino` to the Arduino Mega 2560 via Arduino IDE (`Servo` library required, built-in). Confirm `ROBOLENS READY` on Serial Monitor (115200 baud).
 
 ### 2. Raspberry Pi
-Run the following commands:
+```bash
+sudo apt update && sudo apt install python3-pip mjpg-streamer -y
+pip install websockets pyserial --break-system-packages
+```
+Set `SERIAL_PORT` in `pi_server.py` to match your Arduino's device (`ls /dev/tty*`, usually `/dev/ttyACM0` or `ttyACM1`).
 
-cd pi_server
-python3 -m venv venv
-source venv/bin/activate
-pip install websockets pyserial firebase-admin
+Start the camera stream:
+```bash
+mjpg_streamer -i "input_uvc.so -d /dev/video0 -r 640x480 -f 15" \
+              -o "output_http.so -p 8080 -w /usr/share/mjpg-streamer/www"
+```
 
-Place your own Firebase service account key here as firebase-service-account.json (not included in this repo), then run:
-
+Run the server:
+```bash
 python3 pi_server.py
+```
+(Set up both as `systemd` services for auto-start on boot.)
 
-To run automatically on boot:
-
-sudo cp robolens-server.service /etc/systemd/system/
-sudo systemctl enable robolens-server.service
-sudo systemctl start robolens-server.service
+Ensure `avahi-daemon` is running so the app can find the Pi at `robolens.local`.
 
 ### 3. Flutter App
-Run the following commands:
-
+```bash
 flutter pub get
-flutter run --release
+flutter run
+```
+On first launch, enter the Pi's IP or `robolens.local` on the Connect screen.
 
-On first launch, connect the app to the Pi's IP address shown on the Connect screen. The Pi and phone must be on the same local network (e.g. phone hotspot).
+## Usage
 
-### Firebase Setup (for push notifications)
-This repo does not include google-services.json or firebase-service-account.json, since these are project-specific credentials.
+1. Power on the robot and connect your phone to the same network as the Pi.
+2. Open the app → Connect screen → enter robot IP → Connect.
+3. Control screen: drag sliders for the arm, hold D-pad buttons to move the chassis, tap STOP for emergency stop.
+4. Settings screen: adjust arm/chassis speed, toggle alerts.
 
-1. Create a Firebase project and register an Android app with package name com.example.robolens_app.
-2. Download google-services.json and place it at android/app/google-services.json.
-3. Generate a service account key (Project Settings → Service Accounts) and save it as pi_server/firebase-service-account.json on the Pi.
+## Safety Notes
 
-Without these files, the app and server still function normally — push notifications are simply disabled.
+- Forward movement auto-blocks if an obstacle is within 30cm.
+- Chassis auto-stops if no command is received for 2 seconds (disconnect protection).
+- Arm has fixed link lengths — reposition the chassis if an object is out of reach.
 
-## Safety Design
 
-- Obstacle detection: forward movement blocks automatically under 30cm.
-- Connection watchdog: chassis auto-stops if no command arrives for 2 seconds.
-- Emergency stop: immediately halts all motor and arm movement.
-- Fail-safe Firebase: if Firebase init fails, robot control is unaffected — only notifications are disabled.
+```
